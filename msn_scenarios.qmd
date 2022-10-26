@@ -1,0 +1,245 @@
+---
+title: "MSN scenarios"
+author: "Josep Pueyo-Ros"
+date: "November 4 2022"
+format: 
+  html:
+    toc: true
+    fig-responsive: true
+execute: 
+  echo: false
+  warning: false
+---
+
+```{r setup}
+#| include: false
+
+library(ediblecity)
+library(tidyverse)
+library(sf)
+library(tmap)
+
+theme_set(theme_classic())
+
+knitr::opts_chunk$set(out.width = "100%")
+
+scenarios <- readRDS("data/all_dfs.RDS")
+
+current <- scenarios$Current
+future <- scenarios$Future
+  
+
+```
+
+## Land uses of Sant Narcis
+
+```{r bau_map}
+
+qtm(city_example, fill="Function")+
+  tm_legend(legend.position = c(1.1,0))
+
+```
+
+As expected, rooftops (i.e. building footprints) are the most frequent land use and the one with the greatest extension. However, only 39 rooftops are flat, and thus potential urban gardens. And from those, only 6 have more than 50 m<sup>2</sup> of flat surface. So, we will focus on gardens on the ground.
+
+
+```{r descriptive}
+
+
+
+# invisible(city_example |> 
+#   st_drop_geometry() |> 
+#   filter(Function == "Rooftop") |> 
+#   filter(flat_area > 0) |> 
+#   arrange(desc(flat_area)))
+
+```
+
+## Urban garden scenarios
+
+We simulated the current scenario and a future scenario where 111 streets in Sant Narcís were converted to community gardens (streets with less than 100 m<sup>2</sup> were discarded). Each community garden is supposed to occupy the 50% of the street's surface. Thus, while current scenario has 1 community garden, the future scenario has 112.
+
+```{r}
+
+future_map <- set_scenario(city_example, pGardens = 0, pVacant = 1, pRooftop = 0, perc_vacant = c(0.5, 0.5),
+             vacant_from = "Streets") |> 
+  mutate(scenario = "Future")
+
+city_example |> 
+  mutate(scenario = "Current") |> 
+  bind_rows(future_map) |>  
+  st_drop_geometry() |> 
+  group_by(Function, scenario) |>
+  summarize(area = sum(area), n = n()) |> 
+  mutate(n = if_else(Function == "Trees", 1917L, n)) |> 
+  ggplot(aes(x=reorder(Function, desc(area)), y=area/10000))+
+  geom_col(fill="lightgreen")+
+  geom_text(aes(y = 0, label = n), angle = 90, hjust=0)+
+  theme(axis.text.x = element_text(angle=45, hjust=1))+
+  labs(x = "Land use", y = "Surface (Ha)")+
+  facet_wrap(vars(scenario))
+
+```
+
+## Urban heat island
+
+```{r}
+UHI_current <- unique(unlist(lapply(current[1,], function(x) x[[3]])))
+UHI_future <- unique(unlist(lapply(future[1,], function(x) x[[3]])))
+```
+
+
+The future scenario will suppose a reduction of `r round(UHI_current - UHI_future,2)` degrees of average temperature in the neighbourhood.
+
+```{r UHI}
+
+tibble(scenario = names(scenarios),
+       UHI = c(UHI_current, UHI_future)
+       ) |> 
+  ggplot(aes(x=scenario, y=UHI, fill=scenario))+
+  geom_col(show.legend = F)+
+  labs(y="Urba Heat Island")+
+  theme(axis.title.x = element_blank())
+  
+
+```
+## Runoff prevention
+
+```{r}
+
+runoff_current <- unlist(lapply(current[2,], function(x) x[[1]]))
+runoff_future <- unlist(lapply(future[2,], function(x) x[[1]]))
+
+difference <- round(mean(runoff_current) - mean(runoff_future),2)
+```
+
+The difference in runoff prevention between current and future scenario is `r difference` mm. assuming a rain event of 85 l/day and that some community gardens have rainwater harvesting systems, randomly distributed between 0 and 45 m<sup>3</sup>.
+
+```{r}
+
+tibble(Current = runoff_current, Future = runoff_future) |> 
+  pivot_longer(everything()) |> 
+  ggplot(aes(x=name, y=value, fill = name))+
+  geom_boxplot(show.legend = F)+
+  scale_fill_brewer()+
+  labs(y="Runoff prevention (mm)")+
+  theme(axis.title.x = element_blank())
+```
+## Distance to closest green area
+
+World Health Organization recommends that any residence should be closer than 300 meters from the closest public green area larger than 0.5 ha. In the future scenario, all community gardens are smaller than this. Therefore, the distance to the closest green area is not affected by the creation of community gardens.
+
+Hence, in both scenario the average distance to closest green area larger than 0.5 ha is `r round(current[[3,1]]["Mean"],1)` meters. Moreover, `r round(green_distance(city_example, percent_out=T)*100,1)`% of the residences in Sant Narcís are further than 300 meters from their closest green area (larger than 0.5 ha).
+
+## Green per capita
+
+This indicator not only considers public green areas, but also private green areas (gardens) to compensate those areas with more dense urban fabric.
+
+
+```{r}
+
+green_capita <- current[[6,1]] |> 
+  left_join(future[[6,2]], by="name", suffix = c("_current", "_future"))
+
+perc_increase <- green_capita |> 
+  mutate(perc_increase = round((green_capita_future - green_capita_current)/green_capita_current*100, 2))
+  
+
+green_capita |>
+  select(neighbourhood = name, starts_with("green")) |> 
+  pivot_longer(starts_with("green")) |>
+  mutate(name = if_else(name == "green_capita_current", "Current", "Future")) |> 
+  ggplot(aes(x=neighbourhood, y=value, fill=name))+
+  geom_col(position = position_dodge())+
+  labs(y=bquote(Green ~per ~capita ~(m^2/person)), fill="Scenario")+
+  theme(axis.title.x = element_blank())
+
+```
+Sant Narcís nord is less dense than the southern part and this is reflected in the indicator. However, green per capita increases in both districts. Percentually, it increases more in Sant Narcís sud (`r perc_increase$perc_increase[2]`%) than in the northern part (`r perc_increase$perc_increase[1]`%).
+
+
+
+## Dioxid nitrogen (NO<sub>2</sub>) sequestered by urban green
+
+```{r}
+
+no2_current <- unlist(current[4,])
+no2_future <- unlist(future[4,])
+
+difference <- round(mean(no2_future) - mean(no2_current),2)
+
+```
+
+The future scenario would have the potential to sequester `r difference` gr/second of NO<sub>2</sub> more than the current scenario.
+
+```{r}
+
+tibble(Scenario = c(rep("Current", 100), rep("Future", 100)),
+       NO2_seq = c(no2_current, no2_future)) |> 
+  ggplot(aes(x=Scenario, y=NO2_seq, fill=Scenario))+
+  geom_col(show.legend = F)+
+  labs(y=bquote(NO[2] ~sequestered ~(gr/s)))
+```
+
+## Volunteers involved in urban agriculture
+
+```{r}
+
+current_vol <- unlist(current[5,])
+future_vol <- unlist(future[5,])
+
+difference <- mean(future_vol) - mean(current_vol)
+
+current_05 <- round(quantile(current_vol, 0.05))
+current_95 <- round(quantile(current_vol, 0.95))
+
+future_05 <- round(quantile(future_vol, 0.05))
+future_95 <- round(quantile(future_vol, 0.95))
+
+```
+Despite the uncertainty in estimating the number of volunteers, the indicators clearly shows how the volunteers involved in community gardens in the future scenario is relevant. In the most optimistic estimations, it would suppose that neighbours from other parts in the city should be involved in the project to assume all the necessary manwork.
+
+While in the current scenario the number of estimated volunteers is between `r current_05` and `r current_95`, the number of volunteers estimated in the future scenario is between `r future_05` and `r future_95`.
+
+```{r}
+
+tibble(scenario = c(rep("Current", 1e5), rep("Future", 1e5)),
+       volunteers = c(current_vol, future_vol)) |> 
+  ggplot(aes(x=scenario, y=volunteers, fill=scenario))+
+  geom_boxplot(show.legend = F)
+
+```
+
+## Food security
+
+```{r}
+
+current_food <- unlist(current[8,])
+future_food <- unlist(future[8,])
+
+current_security <- mean(current_food /(73 * sum(neighbourhoods$inhabitants)) * 100)
+future_security <- mean(future_food /(73 * sum(neighbourhoods$inhabitants)) * 100)
+
+```
+The food security is considered the ratio between the food produced and consumed in the neighbourhood. The current scenario, in average, might produce the `r round(current_security, 2)`% of the food consumed (it supposes a production of `r round(mean(current_food))` kg/year. Whereas, this value increases to `r round(future_security,2)`% in the future scenario, assuming a production of `r round(mean(future_food)/1000)` Tm/year.
+
+```{r}
+
+consumption <- 73 * sum(neighbourhoods$inhabitants)
+
+tibble(scenario = c(rep("Current", 1e5), rep("Future", 1e5)),
+       food_production = c(current_food, future_food)) |> 
+  mutate(food_security = food_production / consumption *100) |> 
+  ggplot(aes(x=scenario, y=food_security, fill=scenario))+
+  geom_boxplot(show.legend = F)+
+  scale_y_continuous(name="Food security (%)",
+                     sec.axis = sec_axis(trans = ~. * consumption / 100000,
+                                         name = "Food production (Tm)"))+
+  theme(axis.title.x = element_blank())
+
+
+```
+
+
+
+
